@@ -93,7 +93,7 @@ async def yookassa_webhook(
     payload = {
         "user_id": activated_subscription.user_id,
         "subscription_id": str(activated_subscription.id),
-        "amount": float(activated_subscription.price_at_creation)
+        "amount": float(activated_subscription.price_at_creation),
         "status": "success"
     }
 
