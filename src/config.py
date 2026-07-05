@@ -1,4 +1,4 @@
-from pydantic import computed_field
+from pydantic import computed_field, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -8,13 +8,24 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    #API
+    # API
     API_VERSION: str = "1.1.0"
 
-    #YooMoney
-    YOOMONEY_SECRET: str
+    # Telegram bot
+    TELEGRAM_BOT_TOKEN: str = Field(..., description="Токен бота для отправки уведомлений")
+    TELEGRAM_BOT_URL: str = Field(..., description="Ссылка на Telegram-бота")
 
-    #Криптография
+    # YooKassa
+    YOOKASSA_SHOP_ID: str = Field(..., description="Shop ID из личного кабинета YooKassa")
+    YOOKASSA_SECRET_KEY: str = Field(..., description="Секретный API-ключ ЮKassa")
+
+    @computed_field
+    @property
+    def yookassa_return_url(self) -> str:
+        """Возвращает URL для редиректа, подставляя ссылку на бота"""
+        return self.TELEGRAM_BOT_URL
+
+    # Криптография
     MERCHANT_SECRET_KEY: str
     CARD_TOKEN_SECRET_KEY: str
 

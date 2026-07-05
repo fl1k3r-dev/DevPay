@@ -1,78 +1,103 @@
 import logging
-import hmac
-import hashlib
-from urllib.parse import quote
-from fastapi import APIRouter, Depends, HTTPException, Request
+import uuid
+from sys import activate_stack_trampoline
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
 
 from src.config import settings
-from src.api.dependencies import get_broker_service
+from src.api.dependencies import get_broker_service, get_db_session
 from src.services.broker import BrokerService
+from src.services.payment import PaymentService
+
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 logger = logging.getLogger("DevPayAPI")
 
-def verify_yoomoney_signature(form_data: dict, secret_key: str) -> bool:
-    """Проверка подлинности уведомления ЮMoney по стандарту HMAC-SHA256."""
-    # 1. Переводим FormData в обычный словарь, чтобы им можно было манипулировать
-    payload_params = dict(form_data)
+class SubscriptionOrderRequest(BaseModel):
+    user_id: int
+    plan_id: uuid.UUID
+    merchant_id: uuid.UUID
 
-    # 2. ИЗВЛЕКАЕМ ПОДПИСЬ, КОТОРУЮ ПРИСЛАЛ КЛИЕНТ
-    client_sign = payload_params.pop("sign", None)
-    if not client_sign:
-        logger.warning("❌ В запросе отсутствует поле 'sign'")
-        return False
-
-    # 3. Сортируем ключи параметров по алфавиту
-    sorted_keys = sorted(payload_params.keys())
-
-    # 4. Собираем строку формата key1=value1&key2=value2 с URL-кодированием (RFC 3986)
-    parts = []
-    for key in sorted_keys:
-        # ЮMoney требует кодирования значений строк
-        encoded_val = quote(str(payload_params[key]), safe="~")
-        parts.append(f"{key}={encoded_val}")
-
-    data_string = "&".join(parts)
-
-    logger.info(f"Строка на сервере: {data_string}")
-    # 5. Считаем HMAC-SHA256 с использованием секретного ключа
-    expected_sign = hmac.new(
-        secret_key.encode("utf-8"),
-        data_string.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
-
-    # Безопасное сравнение строк для защиты от атак по времени (Timing Attacks)
-    return hmac.compare_digest(expected_sign, client_sign)
-
-
-@router.post("/yoomoney/webhook")
-async def yoomoney_webhook(
-        request: Request,
-        broker: BrokerService = Depends(get_broker_service) # Зависимость вместо глобального объекта
+@router.post("/create", status_code=status.HTTP_201_CREATED)
+async def create_payment_link(
+        payload: SubscriptionOrderRequest,
+        db_session: AsyncSession = Depends(get_db_session),
 ):
-    """Гибкий эндпоинт, принимающий все параметры формы ЮMoney."""
-    # Получаем данные в виде словаря из x-www-form-urlencoded
-    form_data = await request.form()
-    form_dict = dict(form_data)
+    """
+    Вызывается Telegram-ботом, когда пользователь выбирает тариф
+    и нажимает кнопку 'Оплатить'. Возвращает URL для редиректа.
+    """
+    payment_service = PaymentService(db_session=db_session)
 
-    logger.info(f"Получен вебхук ЮMoney. Операция: {form_dict.get('operation_id')}")
+    url = await payment_service.initiate_subscription_payment(
+        user_id=payload.user_id,
+        plan_id=payload.plan_id,
+        merchant_id=payload.merchant_id,
+    )
 
-    if not verify_yoomoney_signature(form_dict, settings.YOOMONEY_SECRET):
-        logger.warning("❌ Невалидная подпись HMAC-SHA256! Запрос отклонен.")
-        raise HTTPException(status_code=400, detail="Invalid signature")
+    if not url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Не удалось сгенерировать платежную ссылку. Попробуйте позже."
+        )
 
+    return {"payment_url": url}
+
+
+@router.post("/yookassa/webhook")
+async def yookassa_webhook(
+        request: Request,
+        db_session: AsyncSession = Depends(get_db_session),
+        broker: BrokerService = Depends(get_broker_service)
+):
+    """Принимает JSON-уведомления от ЮKassa и активирует подписки."""
     try:
-        payload = {
-            "user_id": int(form_dict.get("label")),
-            "amount": float(form_dict.get("amount")),
-            "transaction_id": form_dict.get("operation_id")
-        }
-    except (ValueError, TypeError):
-        logger.error("Ошибка парсинга label или amount из формы")
-        raise HTTPException(status_code=400, detail="Invalid data format")
+        notification_data = await request.json()
+    except Exception as e:
+        logger.error("Не удалось распарсить JSON вебхука")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    event_type = notification_data.get("event")
+    payment_object = notification_data.get("object", {})
+    gateway_payment_id = payment_object.get("id")
+    metadata = payment_object.get("metadata", {})
+    subscription_id = metadata.get("subscription_id")
+
+    logger.info(f"Получен вебхук ЮKassa. Событие: {event_type}, ID платежа: {gateway_payment_id}")
+
+    # Мы обрабатываем только статус успешной оплаты
+    if event_type != "payment.succeeded":
+        logger.info(f"Игнорируем событие {event_type} для платежа {gateway_payment_id}")
+        return {"status": "ignored"}
+
+    if not subscription_id or gateway_payment_id:
+        logger.error("В данных вебхука отсутствует subscription_id или payment_id")
+        raise HTTPException(status_code=400, detail="Missing required metadata fields")
+
+    # Вызываем бизнес-логику активации
+    payment_service = PaymentService(db_session=db_session)
+    activated_subscription = await payment_service.process_succeeded_payment(
+        subscription_id=subscription_id,
+        gateway_payment_id=gateway_payment_id,
+    )
+
+    if not activated_subscription:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Не удалось обработать платеж"
+        )
+
+    # Отправляем событие в RabbitMQ, чтобы бот мгновенно прислал юзеру: "Ура, оплата прошла!"
+    payload = {
+        "user_id": activated_subscription.user_id,
+        "subscription_id": str(activated_subscription.id),
+        "amount": float(activated_subscription.price_at_creation)
+        "status": "success"
+    }
 
     await broker.publish_event("payment_events", payload)
-    logger.info(f"🚀 Событие {form_dict.get('operation_id')} успешно отправлено в RabbitMQ.")
+    logger.info(f"🚀 Событие активации подписки {subscription_id} отправлено в RabbitMQ.")
 
     return {"status": "ok"}
