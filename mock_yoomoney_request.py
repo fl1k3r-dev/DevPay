@@ -6,7 +6,7 @@ from urllib.parse import quote
 from src.config import settings
 
 # Секрет автоматически подтягивается из настроек .env
-SECRET = settings.YOOMONEY_SECRET
+SECRET = settings.YOOKASSA_SECRET_KEY
 
 # Данные платежа (имитируем то, что пришлет ЮMoney)
 payload = {

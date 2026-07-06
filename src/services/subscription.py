@@ -1,5 +1,7 @@
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -7,9 +9,67 @@ from src.models import Subscription, SubscriptionStatus, SubscriptionPlan
 from src.services.encryption import crypto_service
 from src.exceptions import PlanNotFoundError, SubscriptionNotFoundError, InvalidStatusTransitionError
 
+
+# Константы для дефолтных тарифов (теперь жестко привязываем правильные ID к ценам из интерфейса бота)
+DEFAULT_PLANS = [
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        "name": "Тестовый Лайт",
+        "description": "Доступ к базовым фичам бэкенда",
+        "price": Decimal("299.00"),
+        "period_days": 30
+    },
+    {
+        "id": uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        "name": "Тестовый Про",
+        "description": "Полный доступ ко всем фичам бэкенда",
+        "price": Decimal("1999.00"),
+        "period_days": 30
+    }
+]
+
+
 class SubscriptionService:
     def __init__(self, db_session: AsyncSession):
         self.session = db_session
+
+    async def seed_default_plans(self) -> None:
+        """Автоматическая инициализация дефолтных тарифов при старте приложения."""
+        for plan_data in DEFAULT_PLANS:
+            query = select(SubscriptionPlan).where(SubscriptionPlan.id == plan_data["id"])
+            result = await self.session.execute(query)
+            existing_plan = result.scalar_one_or_none()
+
+            if not existing_plan:
+                new_plan = SubscriptionPlan(**plan_data)
+                self.session.add(new_plan)
+
+            else:
+                if existing_plan.price != plan_data["price"]:
+                    existing_plan.price = plan_data["price"]
+                    existing_plan.name = plan_data["name"]
+
+        # Фиксируем изменения в базе
+        await self.session.commit()
+
+    async def create_plan(
+            self,
+            name: str,
+            description: str,
+            price: Decimal,
+            period_days: int = 30
+    ) -> SubscriptionPlan:
+        """Метод для админки: создание кастомного тарифного плана."""
+        new_plan = SubscriptionPlan(
+            id=uuid.uuid4(),
+            name=name,
+            description=description,
+            price=price,
+            period_days=period_days
+        )
+        self.session.add(new_plan)
+        await self.session.flush()   # Чтобы вернуть объект с уже сгенерированным UUID
+        return new_plan
 
     async def create_subscription(
         self, user_id: int, plan_id: uuid.UUID, merchant_id: uuid.UUID, payment_method_id: str

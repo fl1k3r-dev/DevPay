@@ -1,6 +1,5 @@
 import logging
 import uuid
-from sys import activate_stack_trampoline
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,7 +51,7 @@ async def yookassa_webhook(
         db_session: AsyncSession = Depends(get_db_session),
         broker: BrokerService = Depends(get_broker_service)
 ):
-    """Принимает JSON-уведомления от ЮKassa и активирует подписки."""
+    """Принимает JSON-уведомления от YooKassa и активирует подписки."""
     try:
         notification_data = await request.json()
     except Exception as e:
@@ -72,7 +71,7 @@ async def yookassa_webhook(
         logger.info(f"Игнорируем событие {event_type} для платежа {gateway_payment_id}")
         return {"status": "ignored"}
 
-    if not subscription_id or gateway_payment_id:
+    if not subscription_id or not gateway_payment_id:
         logger.error("В данных вебхука отсутствует subscription_id или payment_id")
         raise HTTPException(status_code=400, detail="Missing required metadata fields")
 

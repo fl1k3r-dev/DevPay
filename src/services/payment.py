@@ -27,7 +27,7 @@ class PaymentService:
     ) -> Optional[str]:
         """
         Инициализирует покупку подписки: создает запись в БД со статусом PAYMENT_PENDING,
-        генерирует платеж в ЮKassa и возвращает ссылку на оплату.
+        генерирует платеж в YooKassa и возвращает ссылку на оплату.
         """
         # 1. Получаем данные тарифного плана из БД
         result = await self.db_session.execute(select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id))
@@ -128,8 +128,8 @@ class PaymentService:
             # Для рекуррентных платежей (автопродлений) нам нужен сохраненный payment_method
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.yokassa.base_url}/{gateway_payment_id}",
-                    auth=self.yokassa.auth
+                    f"{self.yookassa_client.base_url}/{gateway_payment_id}",
+                    auth=self.yookassa_client.auth
                 )
                 payment_info = response.json()
 

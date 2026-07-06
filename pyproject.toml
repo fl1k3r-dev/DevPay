@@ -6,7 +6,7 @@ authors = [
     {name = "fl1k3r1337"}
 ]
 license = "MIT"
-requires-python = "^3.11"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "sqlalchemy (>=2.0.51,<3.0.0)",
     "asyncpg (>=0.31.0,<0.32.0)",
@@ -22,7 +22,8 @@ dependencies = [
     "requests (>=2.34.2,<3.0.0)",
     "python-multipart (>=0.0.32,<0.0.33)",
     "apscheduler (>=3.11.3,<4.0.0)",
-    "httpx (>=0.28.1,<0.29.0)"
+    "httpx (>=0.28.1,<0.29.0)",
+    "aiogram (>=3.29.1,<4.0.0)"
 ]
 
 

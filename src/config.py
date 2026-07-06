@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # Telegram bot
     TELEGRAM_BOT_TOKEN: str = Field(..., description="Токен бота для отправки уведомлений")
     TELEGRAM_BOT_URL: str = Field(..., description="Ссылка на Telegram-бота")
+    ADMIN_ID: int
 
     # YooKassa
     YOOKASSA_SHOP_ID: str = Field(..., description="Shop ID из личного кабинета YooKassa")

@@ -2,14 +2,13 @@ import logging
 from typing import Optional, Dict, Any
 import httpx
 
-from mock_yoomoney_request import response
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
 class YookassaClient:
     def __init__(self):
-        self.base_url = "https://api.yokassa.ru/v3/payments"
+        self.base_url = "https://api.yookassa.ru/v3/payments"
         # ЮKassa использует стандартную Basic-авторизацию: (ShopID, SecretKey)
         self.auth = (settings.YOOKASSA_SHOP_ID, settings.YOOKASSA_SECRET_KEY)
 
@@ -30,7 +29,7 @@ class YookassaClient:
         :return: Словарь с данными платежа (включая confirmation_url) или None в случае ошибки
         """
         headers = {
-            "Idempotency-key": idempotency_key,
+            "Idempotence-Key": idempotency_key,
             "Content-Type": "application/json",
         }
 
