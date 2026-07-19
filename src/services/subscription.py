@@ -1,14 +1,18 @@
+import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from src.models import Subscription, SubscriptionStatus, SubscriptionPlan
+from src.models import Subscription, SubscriptionStatus, SubscriptionPlan, PlanStatus
 from src.services.encryption import crypto_service
 from src.exceptions import PlanNotFoundError, SubscriptionNotFoundError, InvalidStatusTransitionError
+from src.services.yookassa import YookassaClient
 
+
+logger = logging.getLogger(__name__)
 
 # Константы для дефолтных тарифов (теперь жестко привязываем правильные ID к ценам из интерфейса бота)
 DEFAULT_PLANS = [
@@ -30,8 +34,10 @@ DEFAULT_PLANS = [
 
 
 class SubscriptionService:
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession, broker_service):
         self.session = db_session
+        self.broker = broker_service
+        self.yookassa_client = YookassaClient()
 
     async def seed_default_plans(self) -> None:
         """Автоматическая инициализация дефолтных тарифов при старте приложения."""
@@ -114,11 +120,10 @@ class SubscriptionService:
         if subscription.status not in (SubscriptionStatus.PAYMENT_PENDING, SubscriptionStatus.TRIAL):
             raise InvalidStatusTransitionError(subscription.status, SubscriptionStatus.ACTIVE)
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+
         subscription.status = SubscriptionStatus.ACTIVE
         subscription.current_period_start = now
-
-        # Рассчитываем дату окончания на основе снапшота дней
         subscription.current_period_end = now + timedelta(days=subscription.period_days_at_creation)
         subscription.next_payment_at = subscription.current_period_end
 
@@ -143,3 +148,61 @@ class SubscriptionService:
 
         await self.session.flush()
         return subscription
+
+    async def process_subscription_renewal(self, subscription) -> None:
+        """
+        Обрабатывает автопродление конкретной подписки
+        с учетом актуального статуса тарифного плана.
+        """
+        plan = subscription.plan
+
+        # Сценарий 1: Тариф полностью выведен из эксплуатации
+        if plan.status == PlanStatus.DEPRECATED:
+            logger.info(f"Подписка {subscription.id} отменена. Тариф '{plan.name}' DEPRECATED.")
+
+            subscription.status = SubscriptionStatus.CANCELED
+            subscription.auto_renew = False
+
+            notification_payload = {
+                "user_id": str(subscription.user_id),
+                "event": "subscription_deprecated",
+                "plan_name": plan.name
+            }
+            await self.broker.publish_event("notifications", notification_payload)
+            await self.session.commit()
+            return
+
+        # Сценарий 2: Тариф активен или находится в архиве — пытаемся списать средства
+        if plan.status in (PlanStatus.ARCHIVED, PlanStatus.ACTIVE):
+            logger.info(f"Попытка продления подписки {subscription.id} по тарифу '{plan.name}' ({plan.status.value})")
+
+            try:
+                # 1. Расшифровываем токен карты юзера
+                payment_method_id = crypto_service.decrypt_card_token(subscription.encrypted_payment_method_id)
+
+                # 2. Генерируем уникальный ключ идемпотентности для этой попытки продления
+                now_timestamp = int(datetime.now(timezone.utc).replace(tzinfo=None).timestamp())
+                idempotency_key = f"sub_renew_{subscription.id}_{now_timestamp}"
+
+                # 3. Делаем запрос через ЭКЗЕМПЛЯРА класса yookassa_client
+                payment_success = await self.yookassa_client.create_recurrent_payment(
+                    amount=subscription.price_at_creation,
+                    description=f"Продление подписки: {plan.name}",
+                    payment_method_id=payment_method_id,
+                    idempotency_key=idempotency_key
+                )
+
+                if payment_success:
+                    subscription.status = SubscriptionStatus.ACTIVE
+                    # 4. Сдвигаем даты вперед!
+                    subscription.extend_period(days=subscription.period_days_at_creation)
+                    logger.info(f"Подписка {subscription.id} успешно продлена.")
+                else:
+                    subscription.status = SubscriptionStatus.PAST_DUE
+
+            except Exception as e:
+                logger.error(f"Критическая ошибка при ребилле через ЮKassa: {e}")
+                subscription.status = SubscriptionStatus.PAST_DUE
+
+            # Используем сессию инстанса класса
+            await self.session.commit()

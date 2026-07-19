@@ -1,5 +1,4 @@
-import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import update
 
 from src.services.database import DatabaseService
@@ -7,7 +6,7 @@ from src.services.cache import CacheService
 from src.models import Subscription, SubscriptionStatus
 
 async def check_and_expire_subscriptions(db_service: DatabaseService, cache_service: CacheService):
-    print(f"🕒 [{datetime.now()}] Запуск проверки истекших подписок...")
+    print(f"🕒 [{datetime.now(timezone.utc)}] Запуск проверки истекших подписок...")
 
     async with db_service.session_maker() as session:
         async with session.begin():
@@ -15,7 +14,7 @@ async def check_and_expire_subscriptions(db_service: DatabaseService, cache_serv
                 update(Subscription)
                 .where(
                     Subscription.status.in_([SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELED]),
-                    Subscription.current_period_end <= datetime.now()
+                    Subscription.current_period_end <= datetime.now(timezone.utc).replace(tzinfo=None)
                 )
                 .values(status=SubscriptionStatus.EXPIRED)
                 .returning(Subscription.user_id)
