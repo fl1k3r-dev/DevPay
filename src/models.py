@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from enum import Enum as PyEnum
-from sqlalchemy import String, Integer, Numeric, DateTime, ForeignKey, Text, Enum as SQLEnum
+from sqlalchemy import String, Integer, Numeric, ForeignKey, Text, Enum as SQLEnum, Boolean, TIMESTAMP
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Базовый класс для всех моделей
@@ -16,6 +16,7 @@ class SubscriptionStatus(str, PyEnum):
     PAYMENT_PENDING = "payment_pending"   # Ждем фиксации оплаты от воркера
     CANCELED = "canceled"                 # Отменена, но доживает оплаченный срок
     EXPIRED = "expired"                   # Полностью отключена, срок истек
+    PAST_DUE = "past_due"                 # Если на карте не хватило денег или она заблокирована
 
 # Статусы тарифного плана (Enum)
 class PlanStatus(str, PyEnum):
@@ -35,7 +36,7 @@ class SubscriptionPlan(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     period_days: Mapped[int] = mapped_column(Integer, default=30)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     # Статус из нашего Enum с автоматической конвертацией типов
     status: Mapped[PlanStatus] = mapped_column(
@@ -82,15 +83,22 @@ class Subscription(Base):
     period_days_at_creation: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Таймстампы жизненного цикла
-    current_period_start: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    current_period_end: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-    next_payment_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    current_period_start: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    current_period_end: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    next_payment_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=datetime.now)
+    auto_renew: Mapped[bool] = mapped_column(Boolean, nullable=True)
 
     # Обратная связь с планом
     plan = relationship("SubscriptionPlan", back_populates="subscriptions")
+
+    def extend_period(self, days):
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.current_period_start = now
+        self.current_period_end = now + timedelta(days=days)
+        self.next_payment_at = self.current_period_end
 
 # Модель платежа
 class Payment(Base):
@@ -103,4 +111,4 @@ class Payment(Base):
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

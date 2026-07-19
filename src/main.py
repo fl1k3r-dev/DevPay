@@ -16,7 +16,7 @@ async def lifespan(app: FastAPI):
     db_service = await get_db_service()
     # При старте приложения открываем сессию и сидим базу
     async with db_service.session_maker() as session:
-        sub_service = SubscriptionService(session)
+        sub_service = SubscriptionService(session, broker)
         await sub_service.seed_default_plans()
         logger.info("✅ Проверка и сидинг тарифных планов успешно завершены!")
 

@@ -1,7 +1,7 @@
 import json
 import logging
 import aio_pika
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable, Awaitable, Any
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class BrokerService:
         queue = await self._channel.declare_queue(queue_name, durable=True)
 
         # Конвертируем наш dict в JSON-строку и пакуем в байты
-        message_body = json.dumps(payload).encode()
+        message_body = json.dumps(payload, default=str).encode()
 
         # Отправляем сообщение напрямую в очередь
         await self._channel.default_exchange.publish(
@@ -63,4 +63,52 @@ class BrokerService:
         if self._connection:
             await self._connection.close()
             logger.info("Соединение с RabbitMQ закрыто.")
-            
+
+    async def publish_to_exchange(self, exchange_name: str, payload: dict) -> None:
+        """Публикует сообщение в Fanout Exchange (вебхук шлет сюда)."""
+        if not self._channel:
+            raise RuntimeError("RabbitMQ channel is not initialized. Call connect() first.")
+
+        # Объявляем обменник типа FANOUT
+        exchange = await self._channel.declare_exchange(
+            exchange_name,
+            aio_pika.ExchangeType.FANOUT,
+            durable=True
+        )
+
+        message_body = json.dumps(payload, default=str).encode()
+        message = aio_pika.Message(
+            body=message_body,
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+        )
+
+        # В fanout routing_key не важен, сообщение дублируется во все привязанные очереди
+        await exchange.publish(message, routing_key="")
+        logger.info(f"📤 Сообщение опубликовано в exchange '{exchange_name}'")
+
+
+    async def start_consuming_from_exchange(self, exchange_name: str, queue_name: str, callback: Callable[[Any], Any]):
+        """Создает персональную очередь, привязывает её к Exchange и начинает слушать."""
+        if not self._channel:
+            raise RuntimeError("RabbitMQ channel is not initialized. Call connect() first.")
+
+            # 1. Объявляем тот же самый обменник
+        exchange = await self._channel.declare_exchange(
+            exchange_name,
+            aio_pika.ExchangeType.FANOUT,
+            durable=True
+        )
+
+        # 2. Объявляем уникальную для каждого сервиса очередь
+        queue = await self._channel.declare_queue(queue_name, durable=True)
+
+        # 3. Связываем персональную очередь с общим обменником
+        await queue.bind(exchange, routing_key="")
+
+        # 4. Запускаем консьюмер
+        async def message_wrapper(message: aio_pika.abc.AbstractIncomingMessage):
+            async with message.process():
+                await callback(message.body)
+
+        await queue.consume(message_wrapper)
+        logger.info(f"📢 Успешно подписались на exchange '{exchange_name}' через очередь '{queue_name}'")

@@ -9,7 +9,6 @@ from sqlalchemy import select
 from src.bot.keyboards.inline import get_plans_keyboard, BuyPlanCallback
 from src.models import SubscriptionPlan
 from src.services.payment import PaymentService
-from src.api.dependencies import get_db_service
 from src.config import settings
 
 order_router = Router()

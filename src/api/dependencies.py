@@ -2,10 +2,12 @@ from fastapi import Depends
 
 from src.config import settings
 from src.services.broker import BrokerService
+from src.services.cache import CacheService
 from src.services.database import DatabaseService
 
 _db_service = DatabaseService(settings.database_url)
 _broker = BrokerService(settings.rabbitmq_url)
+_cache_service = CacheService(settings.redis_url)
 
 
 async def get_db_service() -> DatabaseService:
@@ -14,6 +16,9 @@ async def get_db_service() -> DatabaseService:
 
 async def get_broker_service() -> BrokerService:
     return _broker
+
+async def get_cache_service() -> CacheService:
+    return _cache_service
 
 
 from typing import AsyncGenerator
@@ -29,4 +34,5 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 # Зависимость, которая создает сервис подписок, передавая ему сессию
 async def get_subscription_service(session: AsyncSession = Depends(get_db_session)) -> SubscriptionService:
-    return SubscriptionService(session)
+    broker = await get_broker_service()
+    return SubscriptionService(session, broker)

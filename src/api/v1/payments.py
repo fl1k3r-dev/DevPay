@@ -1,11 +1,11 @@
 import logging
 import uuid
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
-from src.config import settings
 from src.api.dependencies import get_broker_service, get_db_session
 from src.services.broker import BrokerService
 from src.services.payment import PaymentService
@@ -61,10 +61,13 @@ async def yookassa_webhook(
     event_type = notification_data.get("event")
     payment_object = notification_data.get("object", {})
     gateway_payment_id = payment_object.get("id")
+    amount_data = payment_object.get("amount") or {}
+    amount = Decimal(amount_data.get("value", "0.0"))
     metadata = payment_object.get("metadata", {})
     subscription_id = metadata.get("subscription_id")
+    user_id = metadata.get("user_id")
 
-    logger.info(f"Получен вебхук ЮKassa. Событие: {event_type}, ID платежа: {gateway_payment_id}")
+    logger.info(f"Получен вебхук YooKassa. Событие: {event_type}, ID платежа: {gateway_payment_id}")
 
     # Мы обрабатываем только статус успешной оплаты
     if event_type != "payment.succeeded":
@@ -75,28 +78,19 @@ async def yookassa_webhook(
         logger.error("В данных вебхука отсутствует subscription_id или payment_id")
         raise HTTPException(status_code=400, detail="Missing required metadata fields")
 
-    # Вызываем бизнес-логику активации
-    payment_service = PaymentService(db_session=db_session)
-    activated_subscription = await payment_service.process_succeeded_payment(
-        subscription_id=subscription_id,
-        gateway_payment_id=gateway_payment_id,
-    )
-
-    if not activated_subscription:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Не удалось обработать платеж"
-        )
-
     # Отправляем событие в RabbitMQ, чтобы бот мгновенно прислал юзеру: "Ура, оплата прошла!"
     payload = {
-        "user_id": activated_subscription.user_id,
-        "subscription_id": str(activated_subscription.id),
-        "amount": float(activated_subscription.price_at_creation),
+        "user_id": user_id,
+        "subscription_id": subscription_id,
+        "amount": amount,
+        "operation_id": gateway_payment_id,
         "status": "success"
     }
 
-    await broker.publish_event("payment_events", payload)
-    logger.info(f"🚀 Событие активации подписки {subscription_id} отправлено в RabbitMQ.")
+    await broker.publish_to_exchange(
+        exchange_name="payment_events_exchange",
+        payload=payload
+    )
+    logger.info(f"🚀 Событие активации подписки {subscription_id} отправлено в обменник.")
 
     return {"status": "ok"}

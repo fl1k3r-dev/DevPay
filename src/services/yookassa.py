@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from typing import Optional, Dict, Any
 import httpx
 
@@ -9,8 +10,12 @@ logger = logging.getLogger(__name__)
 class YookassaClient:
     def __init__(self):
         self.base_url = "https://api.yookassa.ru/v3/payments"
-        # ЮKassa использует стандартную Basic-авторизацию: (ShopID, SecretKey)
+        # YooKassa использует стандартную Basic-авторизацию: (ShopID, SecretKey)
         self.auth = (settings.YOOKASSA_SHOP_ID, settings.YOOKASSA_SECRET_KEY)
+        self.headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "DevPay-App/1.0"
+        }
 
     async def create_payment(
             self,
@@ -28,10 +33,7 @@ class YookassaClient:
         :param metadata: Метаданные платежа
         :return: Словарь с данными платежа (включая confirmation_url) или None в случае ошибки
         """
-        headers = {
-            "Idempotence-Key": idempotency_key,
-            "Content-Type": "application/json",
-        }
+        headers = {**self.headers, "Idempotence-Key": idempotency_key}
 
         # Формируем тело запроса строго по документации ЮKassa REST API
         payload = {
@@ -80,22 +82,72 @@ class YookassaClient:
             logger.error(f"Непредвиденная ошибка в YokassaClient: {e}")
             return None
 
-    async def get_payment_status(self, payment_gateway_id: str) -> Optional[str]:
+    async def get_payment_details(self, payment_id: str) -> Optional[dict]:
         """
         Метод для ручной проверки статуса платежа (на случай, если вебхук не дошел).
 
         :param payment_gateway_id: ID платежа на стороне ЮKassa (например, '21b23b59-000f-5000-9000-01b5042c1325')
         :return: Текущий статус в ЮKassa (succeeded, pending, canceled) или None
         """
-        url = f"{self.base_url}/{payment_gateway_id}"
+        url = f"{self.base_url}/{payment_id}"
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(url, auth=self.auth, timeout=5.0)
+                response = await client.get(
+                    url,
+                    auth=self.auth,
+                    headers=self.headers,
+                    timeout=10.0
+                )
+                # Выбросит HTTPError, если статус не 2xx
                 response.raise_for_status()
-                data = response.json()
-                return data.get("status")
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"❌ ЮKassa вернула ошибку API при запросе платежа {payment_id}: "
+                f"Статус {e.response.status_code} — {e.response.text}"
+            )
+            return None
+        except httpx.RequestError as e:
+            logger.error(f"💥 Сетевая ошибка при попытке связаться с ЮKassa для платежа {payment_id}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Непредвиденная ошибка при получении данных платежа {payment_id}: {e}")
+            return None
+
+    async def create_recurrent_payment(
+            self,
+            amount: Decimal,
+            description: str,
+            payment_method_id: str,
+            idempotency_key: str
+    ) -> bool:
+        """Создание автоплатежа (рекурентного списания) по сохраненному токену карты."""
+        headers = {**self.headers, "Idempotence-Key": idempotency_key}
+
+        payload = {
+            "amount": {
+                "value": f"{amount:.2f}",
+                "currency": "RUB"
+            },
+            "capture": True,
+            "payment_method_id": payment_method_id,
+            "description": description
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    self.base_url, json=payload, auth=self.auth, headers=headers, timeout=10.0
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    # Возвращаем True, только если платеж успешно подтвержден шлюзом
+                    return data.get("status") == "succeeded"
+
+            logger.error(f"ЮKassa вернула статус {response.status_code}: {response.text}")
+            return False
 
         except Exception as e:
-            logger.error(f"Ошибка при проверке статуса платежа {payment_gateway_id}: {e}")
-            return None
+            logger.error(f"Ошибка при проведении автоплатежа: {e}")
+            return False

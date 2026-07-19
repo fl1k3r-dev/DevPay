@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Optional
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -63,12 +63,12 @@ class DatabaseService:
                         return None
 
                     # 2. Проверяем, что сумма платежа соответствует цене подписки (с небольшим допуском из-за float)
-                    if abs(amount - subscription.price_at_creation) > 0.01:
+                    if abs(amount - float(subscription.price_at_creation)) > 0.01:
                         logger.error(f"❌ [DB] Сумма платежа {amount} не совпадает с ценой подписки {subscription.price_at_creation} для пользователя {user_id}")
                         return None
 
                     # 3. Обновляем жизненный цикл подписки
-                    now = datetime.now()
+                    now = datetime.now(timezone.utc).replace(tzinfo=None)
                     # Берем дни из снапшота плана, сохраненного при создании подписки
                     days_to_add = subscription.period_days_at_creation or 30
 

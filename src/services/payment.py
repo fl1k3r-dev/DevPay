@@ -5,9 +5,8 @@ from typing import Optional
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from src.services import subscription
 from src.services.yookassa import YookassaClient
 from src.services.encryption import crypto_service
 from src.models import Subscription, SubscriptionPlan, SubscriptionStatus, Payment
@@ -66,7 +65,10 @@ class PaymentService:
         description = f"Оплата подписки '{plan.name}' для пользователя {user_id}"
 
         # В metadata кладем ID подписки, чтобы вебхук знал, кого активировать
-        metadata = {"subscription_id": idempotency_key}
+        metadata = {
+            "subscription_id": idempotency_key,
+            "user_id": str(user_id)  # Передаем строкой, YooKassa любит строки
+        }
 
         yookassa_response = await self.yookassa_client.create_payment(
             amount=float(plan.price),
@@ -95,17 +97,32 @@ class PaymentService:
             gateway_payment_id: str
     ) -> Optional[Subscription]:
         """
-        Обрабатывает успешный платеж: проверяет статус в ЮKassa,
+        Обрабатывает успешный платеж: проверяет статус в YooKassa,
         переводит подписку в ACTIVE и логирует платеж в таблицу payments.
         """
-        # 1. Защита от фейковых вебхуков: делаем встречный запрос в ЮKassa
-        actual_status = await self.yookassa_client.get_payment_status(gateway_payment_id)
-        if actual_status != "succeeded":
-            logger.warning(f"⚠️ Попытка обработать вебхук для платежа {gateway_payment_id} со статусом {actual_status}")
+        # 1. СЕТЕВОЙ БЛОК: Делаем один чистый вызов через наш клиент до транзакции
+        payment_info = await self.yookassa_client.get_payment_details(gateway_payment_id)
+
+        if not payment_info:
+            logger.error(f"❌ Не удалось обработать платеж {gateway_payment_id}, так как данные от ЮKassa не получены.")
             return None
 
+        # Проверяем статус
+        actual_status = payment_info.get("status")
+        if actual_status != "succeeded":
+            logger.warning(f"⚠️ Платеж {gateway_payment_id} имеет статус {actual_status}, а не succeeded. Отмена.")
+            return None
+
+        # Вытаскиваем токен карты
+        payment_method = payment_info.get("payment_method", {})
+        payment_method_id = payment_method.get("id")
+
+        if not payment_method_id or payment_method_id == "NO_TOKEN":
+            logger.error(f"❌ Не удалось получить payment_method.id от YooKassa для платежа {gateway_payment_id}")
+            return None
+
+        # 2. БЛОК БАЗЫ ДАННЫХ: Открываем транзакцию только тогда, когда все данные на руках
         try:
-            # 2. Ищем подписку в БД с блокировкой строки (FOR UPDATE), чтобы избежать race condition
             subscription_uuid = uuid.UUID(subscription_id)
             query = (
                 select(Subscription)
@@ -119,40 +136,24 @@ class PaymentService:
                 logger.error(f"❌ Подписка {subscription_id} не найдена в БД при обработке вебхука")
                 return None
 
-            # 3. Идемпотентность: если подписка уже активна, просто возвращаем её (дублирующий вебхук)
+            # Идемпотентность: если подписка уже активна, просто возвращаем её (дублирующий вебхук)
             if subscription.status == SubscriptionStatus.ACTIVE:
                 logger.info(f"ℹ️ Подписка {subscription_id} уже имеет статус ACTIVE. Пропускаем.")
                 return subscription
 
-            # 4. Извлекаем данные платежа из ЮKassa, чтобы получить токен карты (payment_method.id)
-            # Для рекуррентных платежей (автопродлений) нам нужен сохраненный payment_method
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.yookassa_client.base_url}/{gateway_payment_id}",
-                    auth=self.yookassa_client.auth
-                )
-                payment_info = response.json()
-
-            payment_method = payment_info.get("payment_method", {})
-            payment_method_id = payment_method.get("id", "NO_TOKEN")
-
-            if not payment_method_id:
-                logger.error(f"❌ Не удалось получить payment_method.id от ЮKassa для платежа {gateway_payment_id}")
-                return None
-
-            # 5. Шифруем токен карты
+            # 3. Шифруем токен карты
             logger.info(f"Шифруем токен карты для подписки {subscription_id}")
             encrypted_token = crypto_service.encrypt_card_token(payment_method_id)
             subscription.encrypted_payment_method_id = encrypted_token
 
-            # 6. Обновляем жизненный цикл подписки
-            now = datetime.now()
+            # 4. Обновляем жизненный цикл подписки
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
             subscription.status = SubscriptionStatus.ACTIVE
             subscription.current_period_start = now
             subscription.current_period_end = now + timedelta(days=subscription.period_days_at_creation)
             subscription.next_payment_at = subscription.current_period_end
 
-            # 7. Создаем запись в таблице payments
+            # 5. Создаем запись в таблице payments
             new_payment = Payment(
                 id=uuid.uuid4(),
                 operation_id=gateway_payment_id,
@@ -166,6 +167,6 @@ class PaymentService:
             return subscription
 
         except Exception as e:
-            logger.error(f"💥 Ошибка при обработке успешного платежа для подписки {subscription_id}: {e}")
+            logger.exception(f"💥 Ошибка при обработке успешного платежа для подписки {subscription_id}: {e}")
             await self.db_session.rollback()
             return None

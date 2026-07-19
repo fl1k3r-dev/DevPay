@@ -40,10 +40,20 @@ async def start_rabbitmq_consumer(bot: Bot, ampq_url: str):
             connection = await aio_pika.connect_robust(ampq_url)
             channel = await connection.channel()
 
-            # Объявляем ту самую очередь, в которую FastAPI шлет эвенты
-            queue = await channel.declare_queue("payment_events", durable=True)
+            # Объявляем Fanout Exchange (тот самый, в который FastAPI шлет эвенты)
+            exchange = await channel.declare_exchange(
+                name="payment_events_exchange",
+                type=aio_pika.ExchangeType.FANOUT,
+                durable=True
+            )
 
-            logger.info("📢 Консьюмер RabbitMQ успешно запущен и слушает очередь 'payment_events'...")
+            # Объявляем уникальную очередь специально для инстанса БОТА
+            queue = await channel.declare_queue("bot_payment_events_queue", durable=True)
+
+            # Связываем эту очередь с общим обменником
+            await queue.bind(exchange, routing_key="")
+
+            logger.info("📢 Консьюмер RabbitMQ успешно запущен и слушает очередь 'bot_payment_events_queue'...")
 
             # Начинаем принимать сообщения
             await queue.consume(lambda msg: process_payment_event(msg, bot))

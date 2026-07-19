@@ -3,8 +3,7 @@ import json
 from src.config import settings
 from src.services.cache import CacheService
 from src.services.database import DatabaseService
-from src.services.broker import BrokerService
-import worker
+from src import worker
 
 cache_service = CacheService(redis_url=settings.redis_url)
 db_service = DatabaseService(database_url=settings.database_url)
