@@ -201,7 +201,7 @@ class SubscriptionService:
                     subscription.status = SubscriptionStatus.PAST_DUE
 
             except Exception as e:
-                logger.error(f"Критическая ошибка при ребилле через ЮKassa: {e}")
+                logger.error(f"Критическая ошибка при ребилле через YooKassa: {e}")
                 subscription.status = SubscriptionStatus.PAST_DUE
 
             # Используем сессию инстанса класса
