@@ -1,11 +1,14 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 from src.config import settings
 from src.bot.handlers.start import start_router
 from src.bot.handlers.order import order_router
 from src.bot.handlers.admin import admin_router
+from src.bot.handlers.profile import profile_router
 from src.bot.mq_consumer import start_rabbitmq_consumer
 
 from src.api.dependencies import get_db_service
@@ -33,6 +36,7 @@ def register_routers(dispatcher: Dispatcher):
     dispatcher.include_router(start_router)
     dispatcher.include_router(order_router)
     dispatcher.include_router(admin_router)
+    dispatcher.include_router(profile_router)
     # Регистрируем функцию старта
     dispatcher.startup.register(on_startup)
 
@@ -46,7 +50,10 @@ async def main():
     logger.info("Инициализация бота...")
 
     # Инициализируем бот и диспетчер
-    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+    bot = Bot(
+        token=settings.TELEGRAM_BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+    )
     dispatcher = Dispatcher()
 
     # 🔗 НАСТРОЙКА БАЗЫ ДАННЫХ ДЛЯ БОТА

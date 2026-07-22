@@ -59,7 +59,7 @@ class Subscription(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    merchant_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    merchant_id: Mapped[uuid.UUID] = mapped_column(nullable=True)
 
     # Внешний ключ на план подписки
     plan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("subscription_plans.id"), nullable=False)
@@ -76,7 +76,7 @@ class Subscription(Base):
     )
 
     # Токен карты/метода оплаты (зашифрованный Fernet-строкой)
-    encrypted_payment_method_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    encrypted_payment_method_id: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
 
     # Снапшоты на случай, если админ изменит цену самого плана, а у юзера старый тариф
     price_at_creation: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
